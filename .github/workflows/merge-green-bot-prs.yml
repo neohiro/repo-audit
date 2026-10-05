@@ -1,0 +1,60 @@
+name: Merge green bot PRs
+
+on:
+  schedule:
+    # Off the hour, weekdays only. The backlog this prevents accumulates weekly
+    # (dependabot's default cadence), so an hourly sweep is ample; a less
+    # frequent one just lets it pile up unnoticed.
+    - cron: '17 * * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: merge-bot-prs
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    # Deliberately not on the default branch of a repo it merges into: this
+    # acts on 90-odd repositories unattended, and that authority should live in
+    # one place with one review history.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Unit tests for the refusal rules
+        run: python tests/test_merge_bot_prs.py
+
+      # The dry run is not a gate on the merge that follows; it is the record.
+      # Every decision, merge or refusal, is printed here and lands in the run
+      # summary, so a later "why did this merge by itself" has an answer that
+      # was written down at the time rather than reconstructed.
+      - name: Dry run
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: python scripts/merge_bot_prs.py --all-owned --dry-run | tee decisions.txt
+
+      - name: Merge
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: python scripts/merge_bot_prs.py --all-owned | tee -a decisions.txt
+
+      - name: Summarise
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          {
+            echo "## Green bot PRs"
+            echo
+            echo '```'
+            cat decisions.txt 2>/dev/null || echo "(no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
